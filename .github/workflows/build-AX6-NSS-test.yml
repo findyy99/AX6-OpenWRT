@@ -1,126 +1,83 @@
-name: Build OpenWRT for AX6-NSS Test
+name: Build AX6 OpenWRT
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-
-    env:
-      REPO_URL: https://github.com/VIKINGYFY/immortalwrt.git
-      REPO_BRANCH: main
-      CONFIG_FILE: AX6-IPQ/.config
-      DIY_SH: AX6-IPQ/diy.sh
-      FILES: AX6-IPQ/files
-      TZ: Asia/Shanghai
+    runs-on: ubuntu-22.04
 
     steps:
-    # =========================
-    # 1. Checkout
-    # =========================
-    - name: Checkout
-      uses: actions/checkout@v4
+      # 1️⃣ 先拉代码（必须在扩容前）
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-    # =========================
-    # 2. Free apt + fix disk pressure (关键修复)
-    # =========================
-    - name: Fix system disk usage
-      run: |
-        sudo rm -rf /var/lib/apt/lists/*
-        sudo rm -rf /var/cache/apt/*
-        sudo apt-get clean
-        sudo chown -R runner:runner $GITHUB_WORKSPACE
+      # 2️⃣ 最大化磁盘空间（安全版本）
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 10240
+          temp-reserve-mb: 200
+          swap-size-mb: 2048
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+          remove-docker-images: true
 
-    # =========================
-    # 3. Maximize build space (安全版)
-    # =========================
-    - name: Maximize build space
-      uses: easimon/maximize-build-space@master
-      with:
-        root-reserve-mb: 2048
-        temp-reserve-mb: 100
-        swap-size-mb: 2048
-        remove-dotnet: true
-        remove-android: true
-        remove-haskell: true
-        remove-codeql: true
-        remove-docker-images: true
+      # 3️⃣ 基础依赖
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3 python3-pip rsync unzip zlib1g-dev file wget
 
-    # =========================
-    # 4. Move apt cache to large disk (稳定增强)
-    # =========================
-    - name: Relocate apt cache
-      run: |
-        sudo mkdir -p /home/runner/apt-cache
-        sudo rm -rf /var/cache/apt
-        sudo ln -s /home/runner/apt-cache /var/cache/apt
+      # 4️⃣ 设置变量
+      - name: Set env
+        run: |
+          echo "WORKDIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+          echo "CONFIG_FILE=$GITHUB_WORKSPACE/AX6-IPQ/.config" >> $GITHUB_ENV
+          echo "DIY_SH=$GITHUB_WORKSPACE/AX6-IPQ/diy.sh" >> $GITHUB_ENV
 
-    # =========================
-    # 5. Show system status
-    # =========================
-    - name: System info
-      run: |
-        free -h
-        df -h
+      # 5️⃣ 检查 config 是否存在（关键！）
+      - name: Check config file
+        run: |
+          echo "WORKSPACE:"
+          ls -al $GITHUB_WORKSPACE/AX6-IPQ || true
+          if [ ! -f "$GITHUB_WORKSPACE/AX6-IPQ/.config" ]; then
+            echo "ERROR: .config not found!"
+            exit 1
+          fi
 
-    # =========================
-    # 6. Clone OpenWRT source
-    # =========================
-    - name: Clone source
-      run: |
-        git clone --depth=1 -b $REPO_BRANCH $REPO_URL openwrt
-        cd openwrt
+      # 6️⃣ Copy config（修复路径）
+      - name: Copy config
+        run: |
+          cp $GITHUB_WORKSPACE/AX6-IPQ/.config .config
 
-    # =========================
-    # 7. Feeds update
-    # =========================
-    - name: Update feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+      # 7️⃣ DIY 脚本
+      - name: Run DIY script
+        run: |
+          chmod +x $GITHUB_WORKSPACE/AX6-IPQ/diy.sh
+          $GITHUB_WORKSPACE/AX6-IPQ/diy.sh
 
-    # =========================
-    # 8. Custom scripts
-    # =========================
-    - name: Run DIY script
-      run: |
-        cd openwrt
-        if [ -f "../$DIY_SH" ]; then
-          bash ../$DIY_SH
-        fi
+      # 8️⃣ Update feeds
+      - name: Update feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    # =========================
-    # 9. Copy config
-    # =========================
-    - name: Copy config
-      run: |
-        cd openwrt
-        cp ../$CONFIG_FILE .config
+      # 9️⃣ Build
+      - name: Build firmware
+        run: |
+          make defconfig
+          make -j$(nproc)
 
-    # =========================
-    # 10. Download dependencies
-    # =========================
-    - name: Download dl packages
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j$(nproc)
-
-    # =========================
-    # 11. Build
-    # =========================
-    - name: Build firmware
-      run: |
-        cd openwrt
-        make -j$(nproc) || make -j1 V=s
-
-    # =========================
-    # 12. Upload artifacts
-    # =========================
-    - name: Upload firmware
-      uses: actions/upload-artifact@v4
-      with:
-        name: openwrt-firmware
-        path: openwrt/bin
+      # 🔟 Upload artifacts
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-firmware
+          path: bin/
