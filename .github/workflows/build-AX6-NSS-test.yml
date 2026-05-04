@@ -1,0 +1,126 @@
+name: Build OpenWRT for AX6-NSS Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      REPO_URL: https://github.com/VIKINGYFY/immortalwrt.git
+      REPO_BRANCH: main
+      CONFIG_FILE: AX6-IPQ/.config
+      DIY_SH: AX6-IPQ/diy.sh
+      FILES: AX6-IPQ/files
+      TZ: Asia/Shanghai
+
+    steps:
+    # =========================
+    # 1. Checkout
+    # =========================
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    # =========================
+    # 2. Free apt + fix disk pressure (关键修复)
+    # =========================
+    - name: Fix system disk usage
+      run: |
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /var/cache/apt/*
+        sudo apt-get clean
+        sudo chown -R runner:runner $GITHUB_WORKSPACE
+
+    # =========================
+    # 3. Maximize build space (安全版)
+    # =========================
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 2048
+        temp-reserve-mb: 100
+        swap-size-mb: 2048
+        remove-dotnet: true
+        remove-android: true
+        remove-haskell: true
+        remove-codeql: true
+        remove-docker-images: true
+
+    # =========================
+    # 4. Move apt cache to large disk (稳定增强)
+    # =========================
+    - name: Relocate apt cache
+      run: |
+        sudo mkdir -p /home/runner/apt-cache
+        sudo rm -rf /var/cache/apt
+        sudo ln -s /home/runner/apt-cache /var/cache/apt
+
+    # =========================
+    # 5. Show system status
+    # =========================
+    - name: System info
+      run: |
+        free -h
+        df -h
+
+    # =========================
+    # 6. Clone OpenWRT source
+    # =========================
+    - name: Clone source
+      run: |
+        git clone --depth=1 -b $REPO_BRANCH $REPO_URL openwrt
+        cd openwrt
+
+    # =========================
+    # 7. Feeds update
+    # =========================
+    - name: Update feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    # =========================
+    # 8. Custom scripts
+    # =========================
+    - name: Run DIY script
+      run: |
+        cd openwrt
+        if [ -f "../$DIY_SH" ]; then
+          bash ../$DIY_SH
+        fi
+
+    # =========================
+    # 9. Copy config
+    # =========================
+    - name: Copy config
+      run: |
+        cd openwrt
+        cp ../$CONFIG_FILE .config
+
+    # =========================
+    # 10. Download dependencies
+    # =========================
+    - name: Download dl packages
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j$(nproc)
+
+    # =========================
+    # 11. Build
+    # =========================
+    - name: Build firmware
+      run: |
+        cd openwrt
+        make -j$(nproc) || make -j1 V=s
+
+    # =========================
+    # 12. Upload artifacts
+    # =========================
+    - name: Upload firmware
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-firmware
+        path: openwrt/bin
